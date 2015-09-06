@@ -54,13 +54,13 @@ config IOSCHED_BFQ
 config BFQ_GROUP_IOSCHED
 	bool "BFQ hierarchical scheduling support"
 	depends on BLK_CGROUP && IOSCHED_BFQ=y
-	default n
+	default y
 	---help---
 	  Enable hierarchical scheduling in BFQ, using the blkio controller.
 
 choice
 	prompt "Default I/O scheduler"
-	default DEFAULT_CFQ
+	default DEFAULT_BFQ
 	help
 	  Select the I/O scheduler which will be used by default for all
 	  block devices.
