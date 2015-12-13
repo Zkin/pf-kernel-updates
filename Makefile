@@ -1,8 +1,8 @@
 VERSION = 4
 PATCHLEVEL = 1
-SUBLEVEL = 0
-EXTRAVERSION = -pf4
-NAME = Casted by bike
+SUBLEVEL = 14
+EXTRAVERSION =
+NAME = Series 4800
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
