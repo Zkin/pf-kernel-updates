@@ -60,9 +60,6 @@ config ZEN_INTERACTIVE
 	    Scheduling interval............:   6    ->   3    ms
 	    ISO task max realtime use......:  70 %  ->  25 %
 
-	  --- CPU Frequency Scaling ---
-	    Ondemand down scaling factor...:   1    ->  10
-
 config BROKEN
 	bool
 
