@@ -142,7 +142,11 @@ void print_scheduler_version(void)
 }
 
 /* BFS default rr interval in ms */
+#ifdef CONFIG_ZEN_INTERACTIVE
+#define DEFAULT_RR_INTERVAL (3)
+#else
 #define DEFAULT_RR_INTERVAL (6)
+#endif
 
 /*
  * This is the time all tasks within the same priority round robin.
@@ -180,7 +184,11 @@ static unsigned long policy_cached_timeout[] = {
  * are allowed to run five seconds as real time tasks. This is the total over
  * all online cpus.
  */
+#ifdef CONFIG_ZEN_INTERACTIVE
+int sched_iso_cpu __read_mostly = 25;
+#else
 int sched_iso_cpu __read_mostly = 70;
+#endif
 
 /*
  * The relative length of deadline for each priority(nice) level.
