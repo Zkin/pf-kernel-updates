@@ -1,8 +1,8 @@
 VERSION = 4
 PATCHLEVEL = 4
-SUBLEVEL = 0
-EXTRAVERSION = -pf9
-NAME = Forbidden Moderators Discussing
+SUBLEVEL = 7
+EXTRAVERSION =
+NAME = Blurry Fish Butt
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
