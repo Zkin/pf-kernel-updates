@@ -106,7 +106,7 @@ int vm_dirty_ratio = 20;
  * vm_dirty_ratio * the amount of dirtyable memory
  */
 #ifdef CONFIG_ZEN_INTERACTIVE
-unsigned long vm_dirty_bytes = 256 * 1024 * 1024;
+unsigned long vm_dirty_bytes = 320 * 1024 * 1024;
 #else
 unsigned long vm_dirty_bytes;
 #endif
