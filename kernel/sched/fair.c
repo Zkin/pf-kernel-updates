@@ -48,8 +48,8 @@
  *  run vmstat and monitor the context-switches (cs) field)
  */
 #ifdef CONFIG_ZEN_INTERACTIVE
-unsigned int sysctl_sched_latency = 3000000ULL;
-unsigned int normalized_sysctl_sched_latency = 3000000ULL;
+unsigned int sysctl_sched_latency = 4000000ULL;
+unsigned int normalized_sysctl_sched_latency = 4000000ULL;
 #else
 unsigned int sysctl_sched_latency = 6000000ULL;
 unsigned int normalized_sysctl_sched_latency = 6000000ULL;
@@ -72,8 +72,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling
  * (default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_ZEN_INTERACTIVE
-unsigned int sysctl_sched_min_granularity = 300000ULL;
-unsigned int normalized_sysctl_sched_min_granularity = 300000ULL;
+unsigned int sysctl_sched_min_granularity = 400000ULL;
+unsigned int normalized_sysctl_sched_min_granularity = 400000ULL;
 #else
 unsigned int sysctl_sched_min_granularity = 750000ULL;
 unsigned int normalized_sysctl_sched_min_granularity = 750000ULL;
@@ -105,14 +105,12 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
 #ifdef CONFIG_ZEN_INTERACTIVE
 unsigned int sysctl_sched_wakeup_granularity = 500000UL;
 unsigned int normalized_sysctl_sched_wakeup_granularity = 500000UL;
-
-const_debug unsigned int sysctl_sched_migration_cost = 250000UL;
 #else
 unsigned int sysctl_sched_wakeup_granularity = 1000000UL;
 unsigned int normalized_sysctl_sched_wakeup_granularity = 1000000UL;
+#endif
 
 const_debug unsigned int sysctl_sched_migration_cost = 500000UL;
-#endif
 
 /*
  * The exponential sliding  window over which load is averaged for shares

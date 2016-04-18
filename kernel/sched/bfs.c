@@ -143,7 +143,7 @@ void print_scheduler_version(void)
 
 /* BFS default rr interval in ms */
 #ifdef CONFIG_ZEN_INTERACTIVE
-#define DEFAULT_RR_INTERVAL (3)
+#define DEFAULT_RR_INTERVAL (4)
 #else
 #define DEFAULT_RR_INTERVAL (6)
 #endif
