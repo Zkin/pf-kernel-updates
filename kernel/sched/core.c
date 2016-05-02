@@ -6401,7 +6401,7 @@ static void claim_allocations(int cpu, struct sched_domain *sd)
 static int sched_domains_numa_levels;
 enum numa_topology_type sched_numa_topology_type;
 static int *sched_domains_numa_distance;
-int sched_max_numa_distance;
+int sched_max_numa_distance = -1;
 static struct cpumask ***sched_domains_numa_masks;
 static int sched_domains_curr_level;
 #endif
