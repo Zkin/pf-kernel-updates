@@ -4954,10 +4954,39 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 	int want_affine = 0;
 	int sync = wake_flags & WF_SYNC;
 
+	int _cpu;
+	u64 oldest_idle_stamp = 0xfffffffffffffff;
+	int oldest_idle_stamp_cpu;
+
 	if (sd_flag & SD_BALANCE_WAKE)
 		want_affine = !wake_wide(p) && cpumask_test_cpu(cpu, tsk_cpus_allowed(p));
 
 	rcu_read_lock();
+
+	if (!cpu_rq(prev_cpu)->nr_running)
+	{
+		rcu_read_unlock();
+		return prev_cpu;
+	}
+
+	for_each_online_cpu(_cpu)
+	{
+		if (!cpumask_test_cpu(_cpu, tsk_cpus_allowed(p)) ||
+			cpu_rq(_cpu)->nr_running) continue;
+
+		if (cpu_rq(_cpu)->idle_stamp < oldest_idle_stamp)
+		{
+			oldest_idle_stamp = cpu_rq(_cpu)->idle_stamp;
+			oldest_idle_stamp_cpu = _cpu;
+		}
+	}
+
+	if (oldest_idle_stamp != 0xfffffffffffffff)
+	{
+		rcu_read_unlock();
+		return oldest_idle_stamp_cpu;
+	}
+
 	for_each_domain(cpu, tmp) {
 		if (!(tmp->flags & SD_LOAD_BALANCE))
 			break;
