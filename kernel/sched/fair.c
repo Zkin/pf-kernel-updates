@@ -4963,27 +4963,27 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 
 	rcu_read_lock();
 
-	if (!cpu_rq(prev_cpu)->nr_running)
-	{
+	if (!cpu_rq(prev_cpu)->nr_running) {
+		// Originating core is idle, use it
 		rcu_read_unlock();
+
 		return prev_cpu;
 	}
 
-	for_each_online_cpu(_cpu)
-	{
+	for_each_online_cpu(_cpu) {
 		if (!cpumask_test_cpu(_cpu, tsk_cpus_allowed(p)) ||
 			cpu_rq(_cpu)->nr_running) continue;
 
-		if (cpu_rq(_cpu)->idle_stamp < oldest_idle_stamp)
-		{
+		if (cpu_rq(_cpu)->idle_stamp < oldest_idle_stamp) {
 			oldest_idle_stamp = cpu_rq(_cpu)->idle_stamp;
 			oldest_idle_stamp_cpu = _cpu;
 		}
 	}
 
-	if (oldest_idle_stamp != 0xfffffffffffffff)
-	{
+	if (oldest_idle_stamp != 0xfffffffffffffff) {
+		// Found an idle core, use it
 		rcu_read_unlock();
+
 		return oldest_idle_stamp_cpu;
 	}
 
