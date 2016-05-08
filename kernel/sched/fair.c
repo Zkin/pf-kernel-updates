@@ -4954,15 +4954,18 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 	int want_affine = 0;
 	int sync = wake_flags & WF_SYNC;
 
+#ifdef SCHED_WASTEDCORES
 	int _cpu;
 	u64 oldest_idle_stamp = 0xfffffffffffffff;
 	int oldest_idle_stamp_cpu;
+#endif
 
 	if (sd_flag & SD_BALANCE_WAKE)
 		want_affine = !wake_wide(p) && cpumask_test_cpu(cpu, tsk_cpus_allowed(p));
 
 	rcu_read_lock();
 
+#ifdef SCHED_WASTEDCORES
 	if (!cpu_rq(prev_cpu)->nr_running) {
 		// Originating core is idle, use it
 		rcu_read_unlock();
@@ -4986,6 +4989,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 
 		return oldest_idle_stamp_cpu;
 	}
+#endif
 
 	for_each_domain(cpu, tmp) {
 		if (!(tmp->flags & SD_LOAD_BALANCE))
