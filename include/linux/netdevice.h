@@ -51,6 +51,7 @@
 #include <linux/neighbour.h>
 #include <uapi/linux/netdevice.h>
 #include <uapi/linux/if_bonding.h>
+#include <uapi/linux/pkt_cls.h>
 
 struct netpoll_info;
 struct device;
@@ -265,6 +266,7 @@ struct header_ops {
 	void	(*cache_update)(struct hh_cache *hh,
 				const struct net_device *dev,
 				const unsigned char *haddr);
+	bool	(*validate)(const char *ll_header, unsigned int len);
 };
 
 /* These flag bits are private to the generic network queueing
@@ -777,6 +779,25 @@ static inline bool netdev_phys_item_id_same(struct netdev_phys_item_id *a,
 typedef u16 (*select_queue_fallback_t)(struct net_device *dev,
 				       struct sk_buff *skb);
 
+/* These structures hold the attributes of qdisc and classifiers
+ * that are being passed to the netdevice through the setup_tc op.
+ */
+enum {
+	TC_SETUP_MQPRIO,
+	TC_SETUP_CLSU32,
+};
+
+struct tc_cls_u32_offload;
+
+struct tc_to_netdev {
+	unsigned int type;
+	union {
+		u8 tc;
+		struct tc_cls_u32_offload *cls_u32;
+	};
+};
+
+
 /*
  * This structure defines the management hooks for network devices.
  * The following hooks can be defined; unless noted otherwise, they are
@@ -1011,6 +1032,19 @@ typedef u16 (*select_queue_fallback_t)(struct net_device *dev,
  *	a new port starts listening. The operation is protected by the
  *	vxlan_net->sock_lock.
  *
+ * void (*ndo_add_geneve_port)(struct net_device *dev,
+ *			      sa_family_t sa_family, __be16 port);
+ *	Called by geneve to notify a driver about the UDP port and socket
+ *	address family that geneve is listnening to. It is called only when
+ *	a new port starts listening. The operation is protected by the
+ *	geneve_net->sock_lock.
+ *
+ * void (*ndo_del_geneve_port)(struct net_device *dev,
+ *			      sa_family_t sa_family, __be16 port);
+ *	Called by geneve to notify the driver about a UDP port and socket
+ *	address family that geneve is not listening to anymore. The operation
+ *	is protected by the geneve_net->sock_lock.
+ *
  * void (*ndo_del_vxlan_port)(struct  net_device *dev,
  *			      sa_family_t sa_family, __be16 port);
  *	Called by vxlan to notify the driver about a UDP port and socket
@@ -1133,7 +1167,10 @@ struct net_device_ops {
 	int			(*ndo_set_vf_rss_query_en)(
 						   struct net_device *dev,
 						   int vf, bool setting);
-	int			(*ndo_setup_tc)(struct net_device *dev, u8 tc);
+	int			(*ndo_setup_tc)(struct net_device *dev,
+						u32 handle,
+						__be16 protocol,
+						struct tc_to_netdev *tc);
 #if IS_ENABLED(CONFIG_FCOE)
 	int			(*ndo_fcoe_enable)(struct net_device *dev);
 	int			(*ndo_fcoe_disable)(struct net_device *dev);
@@ -1215,7 +1252,12 @@ struct net_device_ops {
 	void			(*ndo_del_vxlan_port)(struct  net_device *dev,
 						      sa_family_t sa_family,
 						      __be16 port);
-
+	void			(*ndo_add_geneve_port)(struct  net_device *dev,
+						       sa_family_t sa_family,
+						       __be16 port);
+	void			(*ndo_del_geneve_port)(struct  net_device *dev,
+						       sa_family_t sa_family,
+						       __be16 port);
 	void*			(*ndo_dfwd_add_station)(struct net_device *pdev,
 							struct net_device *dev);
 	void			(*ndo_dfwd_del_station)(struct net_device *pdev,
@@ -1271,6 +1313,8 @@ struct net_device_ops {
  * @IFF_NO_QUEUE: device can run without qdisc attached
  * @IFF_OPENVSWITCH: device is a Open vSwitch master
  * @IFF_L3MDEV_SLAVE: device is enslaved to an L3 master device
+ * @IFF_TEAM: device is a team device
+ * @IFF_RXFH_CONFIGURED: device has had Rx Flow indirection table configured
  */
 enum netdev_priv_flags {
 	IFF_802_1Q_VLAN			= 1<<0,
@@ -1297,6 +1341,8 @@ enum netdev_priv_flags {
 	IFF_NO_QUEUE			= 1<<21,
 	IFF_OPENVSWITCH			= 1<<22,
 	IFF_L3MDEV_SLAVE		= 1<<23,
+	IFF_TEAM			= 1<<24,
+	IFF_RXFH_CONFIGURED		= 1<<25,
 };
 
 #define IFF_802_1Q_VLAN			IFF_802_1Q_VLAN
@@ -1323,6 +1369,8 @@ enum netdev_priv_flags {
 #define IFF_NO_QUEUE			IFF_NO_QUEUE
 #define IFF_OPENVSWITCH			IFF_OPENVSWITCH
 #define IFF_L3MDEV_SLAVE		IFF_L3MDEV_SLAVE
+#define IFF_TEAM			IFF_TEAM
+#define IFF_RXFH_CONFIGURED		IFF_RXFH_CONFIGURED
 
 /**
  *	struct net_device - The DEVICE structure.
@@ -1398,8 +1446,7 @@ enum netdev_priv_flags {
  *	@dma:		DMA channel
  *	@mtu:		Interface MTU value
  *	@type:		Interface hardware type
- *	@hard_header_len: Hardware header length, which means that this is the
- *			  minimum size of a packet.
+ *	@hard_header_len: Maximum hardware header length.
  *
  *	@needed_headroom: Extra headroom the hardware may need, but not in all
  *			  cases can this be guaranteed
@@ -2491,6 +2538,24 @@ static inline int dev_parse_header(const struct sk_buff *skb,
 	if (!dev->header_ops || !dev->header_ops->parse)
 		return 0;
 	return dev->header_ops->parse(skb, haddr);
+}
+
+/* ll_header must have at least hard_header_len allocated */
+static inline bool dev_validate_header(const struct net_device *dev,
+				       char *ll_header, int len)
+{
+	if (likely(len >= dev->hard_header_len))
+		return true;
+
+	if (capable(CAP_SYS_RAWIO)) {
+		memset(ll_header + len, 0, dev->hard_header_len - len);
+		return true;
+	}
+
+	if (dev->header_ops && dev->header_ops->validate)
+		return dev->header_ops->validate(ll_header, len);
+
+	return false;
 }
 
 typedef int gifconf_func_t(struct net_device * dev, char __user * bufptr, int len);
@@ -3866,6 +3931,31 @@ static inline bool netif_is_bridge_port(const struct net_device *dev)
 static inline bool netif_is_ovs_master(const struct net_device *dev)
 {
 	return dev->priv_flags & IFF_OPENVSWITCH;
+}
+
+static inline bool netif_is_team_master(struct net_device *dev)
+{
+	return dev->priv_flags & IFF_TEAM;
+}
+
+static inline bool netif_is_team_port(struct net_device *dev)
+{
+	return dev->priv_flags & IFF_TEAM_PORT;
+}
+
+static inline bool netif_is_lag_master(struct net_device *dev)
+{
+	return netif_is_bond_master(dev) || netif_is_team_master(dev);
+}
+
+static inline bool netif_is_lag_port(struct net_device *dev)
+{
+	return netif_is_bond_slave(dev) || netif_is_team_port(dev);
+}
+
+static inline bool netif_is_rxfh_configured(const struct net_device *dev)
+{
+	return dev->priv_flags & IFF_RXFH_CONFIGURED;
 }
 
 /* This device needs to keep skb dst for qdisc enqueue or ndo_start_xmit() */

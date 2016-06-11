@@ -276,7 +276,7 @@ static struct vm_area_struct *remove_vma(struct vm_area_struct *vma)
 	if (vma->vm_ops && vma->vm_ops->close)
 		vma->vm_ops->close(vma);
 	if (vma->vm_file)
-		fput(vma->vm_file);
+		vma_fput(vma);
 	mpol_put(vma_policy(vma));
 	uksm_remove_vma(vma);
 	kmem_cache_free(vm_area_cachep, vma);
@@ -443,12 +443,16 @@ static void validate_mm(struct mm_struct *mm)
 	struct vm_area_struct *vma = mm->mmap;
 
 	while (vma) {
+		struct anon_vma *anon_vma = vma->anon_vma;
 		struct anon_vma_chain *avc;
 
-		vma_lock_anon_vma(vma);
-		list_for_each_entry(avc, &vma->anon_vma_chain, same_vma)
-			anon_vma_interval_tree_verify(avc);
-		vma_unlock_anon_vma(vma);
+		if (anon_vma) {
+			anon_vma_lock_read(anon_vma);
+			list_for_each_entry(avc, &vma->anon_vma_chain, same_vma)
+				anon_vma_interval_tree_verify(avc);
+			anon_vma_unlock_read(anon_vma);
+		}
+
 		highest_address = vma->vm_end;
 		vma = vma->vm_next;
 		i++;
@@ -897,7 +901,7 @@ again:			remove_next = 1 + (end > next->vm_end);
 	if (remove_next) {
 		if (file) {
 			uprobe_munmap(next, next->vm_start, next->vm_end);
-			fput(file);
+			vma_fput(vma);
 		}
 		if (next->anon_vma)
 			anon_vma_merge(vma, next);
@@ -1701,8 +1705,8 @@ out:
 	return addr;
 
 unmap_and_free_vma:
+	vma_fput(vma);
 	vma->vm_file = NULL;
-	fput(file);
 
 	/* Undo any partial mapping done by a device driver. */
 	unmap_region(mm, vma, prev, vma->vm_start, vma->vm_end);
@@ -2168,32 +2172,27 @@ static int acct_stack_growth(struct vm_area_struct *vma, unsigned long size, uns
 int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 {
 	struct mm_struct *mm = vma->vm_mm;
-	int error;
+	int error = 0;
 
 	if (!(vma->vm_flags & VM_GROWSUP))
 		return -EFAULT;
 
-	/*
-	 * We must make sure the anon_vma is allocated
-	 * so that the anon_vma locking is not a noop.
-	 */
+	/* Guard against wrapping around to address 0. */
+	if (address < PAGE_ALIGN(address+4))
+		address = PAGE_ALIGN(address+4);
+	else
+		return -ENOMEM;
+
+	/* We must make sure the anon_vma is allocated. */
 	if (unlikely(anon_vma_prepare(vma)))
 		return -ENOMEM;
-	vma_lock_anon_vma(vma);
 
 	/*
 	 * vma->vm_start/vm_end cannot change under us because the caller
 	 * is required to hold the mmap_sem in read mode.  We need the
 	 * anon_vma lock to serialize against concurrent expand_stacks.
-	 * Also guard against wrapping around to address 0.
 	 */
-	if (address < PAGE_ALIGN(address+4))
-		address = PAGE_ALIGN(address+4);
-	else {
-		vma_unlock_anon_vma(vma);
-		return -ENOMEM;
-	}
-	error = 0;
+	anon_vma_lock_write(vma->anon_vma);
 
 	/* Somebody else might have raced and expanded it already */
 	if (address > vma->vm_end) {
@@ -2211,7 +2210,7 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 				 * updates, but we only hold a shared mmap_sem
 				 * lock here, so we need to protect against
 				 * concurrent vma expansions.
-				 * vma_lock_anon_vma() doesn't help here, as
+				 * anon_vma_lock_write() doesn't help here, as
 				 * we don't guarantee that all growable vmas
 				 * in a mm share the same root anon vma.
 				 * So, we reuse mm->page_table_lock to guard
@@ -2235,7 +2234,7 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 			}
 		}
 	}
-	vma_unlock_anon_vma(vma);
+	anon_vma_unlock_write(vma->anon_vma);
 	khugepaged_enter_vma_merge(vma, vma->vm_flags);
 	validate_mm(mm);
 	return error;
@@ -2251,25 +2250,21 @@ int expand_downwards(struct vm_area_struct *vma,
 	struct mm_struct *mm = vma->vm_mm;
 	int error;
 
-	/*
-	 * We must make sure the anon_vma is allocated
-	 * so that the anon_vma locking is not a noop.
-	 */
-	if (unlikely(anon_vma_prepare(vma)))
-		return -ENOMEM;
-
 	address &= PAGE_MASK;
 	error = security_mmap_addr(address);
 	if (error)
 		return error;
 
-	vma_lock_anon_vma(vma);
+	/* We must make sure the anon_vma is allocated. */
+	if (unlikely(anon_vma_prepare(vma)))
+		return -ENOMEM;
 
 	/*
 	 * vma->vm_start/vm_end cannot change under us because the caller
 	 * is required to hold the mmap_sem in read mode.  We need the
 	 * anon_vma lock to serialize against concurrent expand_stacks.
 	 */
+	anon_vma_lock_write(vma->anon_vma);
 
 	/* Somebody else might have raced and expanded it already */
 	if (address < vma->vm_start) {
@@ -2287,7 +2282,7 @@ int expand_downwards(struct vm_area_struct *vma,
 				 * updates, but we only hold a shared mmap_sem
 				 * lock here, so we need to protect against
 				 * concurrent vma expansions.
-				 * vma_lock_anon_vma() doesn't help here, as
+				 * anon_vma_lock_write() doesn't help here, as
 				 * we don't guarantee that all growable vmas
 				 * in a mm share the same root anon vma.
 				 * So, we reuse mm->page_table_lock to guard
@@ -2309,7 +2304,7 @@ int expand_downwards(struct vm_area_struct *vma,
 			}
 		}
 	}
-	vma_unlock_anon_vma(vma);
+	anon_vma_unlock_write(vma->anon_vma);
 	khugepaged_enter_vma_merge(vma, vma->vm_flags);
 	validate_mm(mm);
 	return error;
@@ -2509,7 +2504,7 @@ static int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 		goto out_free_mpol;
 
 	if (new->vm_file)
-		get_file(new->vm_file);
+		vma_get_file(new);
 
 	if (new->vm_ops && new->vm_ops->open)
 		new->vm_ops->open(new);
@@ -2530,7 +2525,7 @@ static int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (new->vm_ops && new->vm_ops->close)
 		new->vm_ops->close(new);
 	if (new->vm_file)
-		fput(new->vm_file);
+		vma_fput(new);
 	unlink_anon_vmas(new);
  out_free_mpol:
 	mpol_put(vma_policy(new));
@@ -2696,12 +2691,29 @@ SYSCALL_DEFINE5(remap_file_pages, unsigned long, start, unsigned long, size,
 	if (!vma || !(vma->vm_flags & VM_SHARED))
 		goto out;
 
-	if (start < vma->vm_start || start + size > vma->vm_end)
+	if (start < vma->vm_start)
 		goto out;
 
-	if (pgoff == linear_page_index(vma, start)) {
-		ret = 0;
-		goto out;
+	if (start + size > vma->vm_end) {
+		struct vm_area_struct *next;
+
+		for (next = vma->vm_next; next; next = next->vm_next) {
+			/* hole between vmas ? */
+			if (next->vm_start != next->vm_prev->vm_end)
+				goto out;
+
+			if (next->vm_file != vma->vm_file)
+				goto out;
+
+			if (next->vm_flags != vma->vm_flags)
+				goto out;
+
+			if (start + size <= next->vm_end)
+				break;
+		}
+
+		if (!next)
+			goto out;
 	}
 
 	prot |= vma->vm_flags & VM_READ ? PROT_READ : 0;
@@ -2711,9 +2723,16 @@ SYSCALL_DEFINE5(remap_file_pages, unsigned long, start, unsigned long, size,
 	flags &= MAP_NONBLOCK;
 	flags |= MAP_SHARED | MAP_FIXED | MAP_POPULATE;
 	if (vma->vm_flags & VM_LOCKED) {
+		struct vm_area_struct *tmp;
 		flags |= MAP_LOCKED;
+
 		/* drop PG_Mlocked flag for over-mapped range */
-		munlock_vma_pages_range(vma, start, start + size);
+		for (tmp = vma; tmp->vm_start >= start + size;
+				tmp = tmp->vm_next) {
+			munlock_vma_pages_range(tmp,
+					max(tmp->vm_start, start),
+					min(tmp->vm_end, start + size));
+		}
 	}
 
 	file = get_file(vma->vm_file);
@@ -3002,7 +3021,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 		if (anon_vma_clone(new_vma, vma))
 			goto out_free_mempol;
 		if (new_vma->vm_file)
-			get_file(new_vma->vm_file);
+			vma_get_file(new_vma);
 		if (new_vma->vm_ops && new_vma->vm_ops->open)
 			new_vma->vm_ops->open(new_vma);
 		vma_link(mm, new_vma, prev, rb_link, rb_parent);

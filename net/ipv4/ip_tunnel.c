@@ -663,6 +663,8 @@ void ip_tunnel_xmit(struct sk_buff *skb, struct net_device *dev,
 	inner_iph = (const struct iphdr *)skb_inner_network_header(skb);
 	connected = (tunnel->parms.iph.daddr != 0);
 
+	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
+
 	dst = tnl_params->daddr;
 	if (dst == 0) {
 		/* NBMA tunnel */
@@ -760,7 +762,6 @@ void ip_tunnel_xmit(struct sk_buff *skb, struct net_device *dev,
 				tunnel->err_time + IPTUNNEL_ERR_TIMEO)) {
 			tunnel->err_count--;
 
-			memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
 			dst_link_failure(skb);
 		} else
 			tunnel->err_count = 0;
@@ -1119,7 +1120,7 @@ int ip_tunnel_changelink(struct net_device *dev, struct nlattr *tb[],
 	struct ip_tunnel_net *itn = net_generic(net, tunnel->ip_tnl_net_id);
 
 	if (dev == itn->fb_tunnel_dev)
-		return -EINVAL;
+		return fan_has_map(&tunnel->fan) ? 0 : -EINVAL;
 
 	t = ip_tunnel_find(itn, p, dev->type);
 

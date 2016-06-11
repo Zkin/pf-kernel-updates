@@ -12,6 +12,7 @@
 #include <linux/xattr.h>
 #include <linux/security.h>
 #include <linux/cred.h>
+#include <linux/sched.h>
 #include "overlayfs.h"
 
 void ovl_cleanup(struct inode *wdir, struct dentry *wdentry)
@@ -48,6 +49,34 @@ struct dentry *ovl_lookup_temp(struct dentry *workdir, struct dentry *dentry)
 	return temp;
 }
 
+#ifdef CONFIG_OVERLAY_FS_V1
+static const char *ovl_whiteout_symlink = "(overlay-whiteout)";
+int ovl_do_whiteout_v1(struct inode *workdir,
+			      struct dentry *dentry)
+{
+	int err;
+
+	err = vfs_symlink(workdir, dentry, ovl_whiteout_symlink);
+	if (err)
+		return err;
+
+	err = ovl_do_setxattr(dentry, ovl_whiteout_xattr, "y", 1, 0);
+	if (err)
+		vfs_unlink(workdir, dentry, NULL);
+
+	if (err) {
+		/*
+		 * There's no way to recover from failure to whiteout.
+		 * What should we do?  Log a big fat error and... ?
+		 */
+		pr_err("overlayfs: ERROR - failed to whiteout '%s'\n",
+		       dentry->d_name.name);
+	}
+
+	return err;
+}
+#endif
+
 /* caller holds i_mutex on workdir */
 static struct dentry *ovl_whiteout(struct dentry *workdir,
 				   struct dentry *dentry)
@@ -60,7 +89,7 @@ static struct dentry *ovl_whiteout(struct dentry *workdir,
 	if (IS_ERR(whiteout))
 		return whiteout;
 
-	err = ovl_do_whiteout(wdir, whiteout);
+	err = ovl_do_whiteout(wdir, whiteout, dentry);
 	if (err) {
 		dput(whiteout);
 		whiteout = ERR_PTR(err);
@@ -321,6 +350,11 @@ static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
 	struct inode *wdir = workdir->d_inode;
 	struct dentry *upperdir = ovl_dentry_upper(dentry->d_parent);
 	struct inode *udir = upperdir->d_inode;
+	struct iattr attr = {
+		.ia_valid = ATTR_UID | ATTR_GID,
+		.ia_uid = stat->uid,
+		.ia_gid = stat->gid,
+	};
 	struct dentry *upper;
 	struct dentry *newdentry;
 	int err;
@@ -346,6 +380,11 @@ static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
 	err = ovl_create_real(wdir, newdentry, stat, link, hardlink, true);
 	if (err)
 		goto out_dput2;
+	mutex_lock(&newdentry->d_inode->i_mutex);
+	err = notify_change(newdentry, &attr, NULL);
+	mutex_unlock(&newdentry->d_inode->i_mutex);
+	if (err)
+		goto out_cleanup;
 
 	if (S_ISDIR(stat->mode)) {
 		err = ovl_set_opaque(newdentry);
@@ -390,6 +429,8 @@ static int ovl_create_or_link(struct dentry *dentry, int mode, dev_t rdev,
 	struct kstat stat = {
 		.mode = mode,
 		.rdev = rdev,
+		.uid  = current->cred->fsuid,
+		.gid  = current->cred->fsgid,
 	};
 
 	err = -ENOMEM;
@@ -408,18 +449,9 @@ static int ovl_create_or_link(struct dentry *dentry, int mode, dev_t rdev,
 		struct cred *override_cred;
 
 		err = -ENOMEM;
-		override_cred = prepare_creds();
+		override_cred = ovl_prepare_creds(dentry->d_sb);
 		if (!override_cred)
 			goto out_iput;
-
-		/*
-		 * CAP_SYS_ADMIN for setting opaque xattr
-		 * CAP_DAC_OVERRIDE for create in workdir, rename
-		 * CAP_FOWNER for removing whiteout from sticky dir
-		 */
-		cap_raise(override_cred->cap_effective, CAP_SYS_ADMIN);
-		cap_raise(override_cred->cap_effective, CAP_DAC_OVERRIDE);
-		cap_raise(override_cred->cap_effective, CAP_FOWNER);
 		old_cred = override_creds(override_cred);
 
 		err = ovl_create_over_whiteout(dentry, inode, &stat, link,
@@ -618,7 +650,8 @@ static int ovl_remove_upper(struct dentry *dentry, bool is_dir)
 	 * sole user of this dentry.  Too tricky...  Just unhash for
 	 * now.
 	 */
-	d_drop(dentry);
+	if (!err)
+		d_drop(dentry);
 	mutex_unlock(&dir->i_mutex);
 
 	return err;
@@ -660,22 +693,9 @@ static int ovl_do_remove(struct dentry *dentry, bool is_dir)
 		struct cred *override_cred;
 
 		err = -ENOMEM;
-		override_cred = prepare_creds();
+		override_cred = ovl_prepare_creds(dentry->d_sb);
 		if (!override_cred)
 			goto out_drop_write;
-
-		/*
-		 * CAP_SYS_ADMIN for setting xattr on whiteout, opaque dir
-		 * CAP_DAC_OVERRIDE for create in workdir, rename
-		 * CAP_FOWNER for removing whiteout from sticky dir
-		 * CAP_FSETID for chmod of opaque dir
-		 * CAP_CHOWN for chown of opaque dir
-		 */
-		cap_raise(override_cred->cap_effective, CAP_SYS_ADMIN);
-		cap_raise(override_cred->cap_effective, CAP_DAC_OVERRIDE);
-		cap_raise(override_cred->cap_effective, CAP_FOWNER);
-		cap_raise(override_cred->cap_effective, CAP_FSETID);
-		cap_raise(override_cred->cap_effective, CAP_CHOWN);
 		old_cred = override_creds(override_cred);
 
 		err = ovl_remove_and_whiteout(dentry, is_dir);
@@ -697,6 +717,51 @@ static int ovl_unlink(struct inode *dir, struct dentry *dentry)
 static int ovl_rmdir(struct inode *dir, struct dentry *dentry)
 {
 	return ovl_do_remove(dentry, true);
+}
+
+/*
+ * ovl_downgrade_whiteout -- build a symlink whiteout and install it
+ * over the existing chardev whiteout.
+ */
+static void ovl_downgrade_whiteout(struct dentry *old_upperdir,
+				   struct dentry *old)
+{
+	struct dentry *workdir = ovl_workdir(old);
+	struct dentry *legacy_whiteout = NULL;
+	struct dentry *whtdentry;
+	int err;
+
+	err = ovl_lock_rename_workdir(workdir, old_upperdir);
+	if (err)
+		goto out;
+
+	whtdentry = lookup_one_len(old->d_name.name, old_upperdir,
+				   old->d_name.len);
+	if (IS_ERR(whtdentry)) {
+		err = PTR_ERR(whtdentry);
+		goto out_unlock_workdir;
+	}
+
+	legacy_whiteout = ovl_whiteout(workdir, old);
+	if (IS_ERR(legacy_whiteout)) {
+		err = PTR_ERR(legacy_whiteout);
+		goto out_dput;
+	}
+
+	err = ovl_do_rename(workdir->d_inode, legacy_whiteout,
+			    old_upperdir->d_inode, whtdentry, 0);
+	if (err)
+		ovl_cleanup(workdir->d_inode, legacy_whiteout);
+
+out_dput:
+	dput(whtdentry);
+	dput(legacy_whiteout);
+out_unlock_workdir:
+	unlock_rename(workdir, old_upperdir);
+out:
+	if (err)
+		pr_err("overlayfs: dowgrade of '%pd2' whiteout failed (%i)\n",
+		       old, err);
 }
 
 static int ovl_rename2(struct inode *olddir, struct dentry *old,
@@ -791,22 +856,9 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 
 	if (old_opaque || new_opaque) {
 		err = -ENOMEM;
-		override_cred = prepare_creds();
+		override_cred = ovl_prepare_creds(old->d_sb);
 		if (!override_cred)
 			goto out_drop_write;
-
-		/*
-		 * CAP_SYS_ADMIN for setting xattr on whiteout, opaque dir
-		 * CAP_DAC_OVERRIDE for create in workdir
-		 * CAP_FOWNER for removing whiteout from sticky dir
-		 * CAP_FSETID for chmod of opaque dir
-		 * CAP_CHOWN for chown of opaque dir
-		 */
-		cap_raise(override_cred->cap_effective, CAP_SYS_ADMIN);
-		cap_raise(override_cred->cap_effective, CAP_DAC_OVERRIDE);
-		cap_raise(override_cred->cap_effective, CAP_FOWNER);
-		cap_raise(override_cred->cap_effective, CAP_FSETID);
-		cap_raise(override_cred->cap_effective, CAP_CHOWN);
 		old_cred = override_creds(override_cred);
 	}
 
@@ -903,6 +955,13 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 	if (!overwrite && new_is_dir && !old_opaque && new_opaque)
 		ovl_remove_opaque(newdentry);
 
+	/*
+	 * Old dentry now lives in different location. Dentries in
+	 * lowerstack are stale. We cannot drop them here because
+	 * access to them is lockless. This could be only pure upper
+	 * or opaque directory - numlower is zero. Or upper non-dir
+	 * entry - its pureness is tracked by flag opaque.
+	 */
 	if (old_opaque != new_opaque) {
 		ovl_dentry_set_opaque(old, new_opaque);
 		if (!overwrite)
@@ -919,6 +978,9 @@ out_dput:
 	dput(newdentry);
 out_unlock:
 	unlock_rename(new_upperdir, old_upperdir);
+
+	if (!err && ovl_config_legacy(old) && flags & RENAME_WHITEOUT)
+		ovl_downgrade_whiteout(old_upperdir, old);
 out_revert_creds:
 	if (old_opaque || new_opaque) {
 		revert_creds(old_cred);

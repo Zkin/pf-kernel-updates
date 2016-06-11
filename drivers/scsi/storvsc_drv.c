@@ -889,8 +889,9 @@ static void storvsc_handle_error(struct vmscsi_request *vm_srb,
 		do_work = true;
 		process_err_fn = storvsc_remove_lun;
 		break;
-	case (SRB_STATUS_ABORTED | SRB_STATUS_AUTOSENSE_VALID):
-		if ((asc == 0x2a) && (ascq == 0x9)) {
+	case SRB_STATUS_ABORTED:
+		if (vm_srb->srb_status & SRB_STATUS_AUTOSENSE_VALID &&
+		    (asc == 0x2a) && (ascq == 0x9)) {
 			do_work = true;
 			process_err_fn = storvsc_device_scan;
 			/*
@@ -1633,6 +1634,11 @@ static int storvsc_probe(struct hv_device *device,
 	 * from the host.
 	 */
 	host->sg_tablesize = (stor_device->max_transfer_bytes >> PAGE_SHIFT);
+#if defined(CONFIG_X86_32)
+	dev_warn(&device->device, "adjusting sg_tablesize 0x%x -> 0x%x",
+			host->sg_tablesize, MAX_MULTIPAGE_BUFFER_COUNT);
+	host->sg_tablesize = MAX_MULTIPAGE_BUFFER_COUNT;
+#endif
 
 	/* Register the HBA and start the scsi bus scan */
 	ret = scsi_add_host(host, &device->device);

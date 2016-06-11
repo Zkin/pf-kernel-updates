@@ -1121,6 +1121,16 @@ static int check_alu_op(struct verifier_env *env, struct bpf_insn *insn)
 			return -EINVAL;
 		}
 
+		if ((opcode == BPF_LSH || opcode == BPF_RSH ||
+		     opcode == BPF_ARSH) && BPF_SRC(insn->code) == BPF_K) {
+			int size = BPF_CLASS(insn->code) == BPF_ALU64 ? 64 : 32;
+
+			if (insn->imm < 0 || insn->imm >= size) {
+				verbose("invalid shift %d\n", insn->imm);
+				return -EINVAL;
+			}
+		}
+
 		/* pattern match 'bpf_add Rx, imm' instruction */
 		if (opcode == BPF_ADD && BPF_CLASS(insn->code) == BPF_ALU64 &&
 		    regs[insn->dst_reg].type == FRAME_PTR &&
@@ -1993,7 +2003,6 @@ static int replace_map_fd_with_map_ptr(struct verifier_env *env)
 			if (IS_ERR(map)) {
 				verbose("fd %d is not pointing to valid bpf_map\n",
 					insn->imm);
-				fdput(f);
 				return PTR_ERR(map);
 			}
 
@@ -2013,15 +2022,18 @@ static int replace_map_fd_with_map_ptr(struct verifier_env *env)
 				return -E2BIG;
 			}
 
-			/* remember this map */
-			env->used_maps[env->used_map_cnt++] = map;
-
 			/* hold the map. If the program is rejected by verifier,
 			 * the map will be released by release_maps() or it
 			 * will be used by the valid program until it's unloaded
 			 * and all maps are released in free_bpf_prog_info()
 			 */
-			bpf_map_inc(map, false);
+			map = bpf_map_inc(map, false);
+			if (IS_ERR(map)) {
+				fdput(f);
+				return PTR_ERR(map);
+			}
+			env->used_maps[env->used_map_cnt++] = map;
+
 			fdput(f);
 next_insn:
 			insn++;
@@ -2072,7 +2084,7 @@ static void adjust_branches(struct bpf_prog *prog, int pos, int delta)
 		/* adjust offset of jmps if necessary */
 		if (i < pos && i + insn->off + 1 > pos)
 			insn->off += delta;
-		else if (i > pos && i + insn->off + 1 < pos)
+		else if (i > pos + delta && i + insn->off + 1 <= pos + delta)
 			insn->off -= delta;
 	}
 }

@@ -799,6 +799,8 @@ struct intel_digital_port {
 	struct intel_hdmi hdmi;
 	enum irqreturn (*hpd_pulse)(struct intel_digital_port *, bool);
 	bool release_cl2_override;
+	/* for communication with audio component; protected by av_mutex */
+	const struct drm_connector *audio_connector;
 };
 
 struct intel_dp_mst_encoder {
@@ -1204,6 +1206,8 @@ void intel_dp_set_link_params(struct intel_dp *intel_dp,
 void intel_dp_start_link_train(struct intel_dp *intel_dp);
 void intel_dp_stop_link_train(struct intel_dp *intel_dp);
 void intel_dp_sink_dpms(struct intel_dp *intel_dp, int mode);
+void intel_dp_encoder_reset(struct drm_encoder *encoder);
+void intel_dp_encoder_suspend(struct intel_encoder *intel_encoder);
 void intel_dp_encoder_destroy(struct drm_encoder *encoder);
 int intel_dp_sink_crc(struct intel_dp *intel_dp, u8 *crc);
 bool intel_dp_compute_config(struct intel_encoder *encoder,

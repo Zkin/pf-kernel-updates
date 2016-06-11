@@ -768,31 +768,6 @@ static inline void i_size_write(struct inode *inode, loff_t i_size)
 #endif
 }
 
-/* Helper functions so that in most cases filesystems will
- * not need to deal directly with kuid_t and kgid_t and can
- * instead deal with the raw numeric values that are stored
- * in the filesystem.
- */
-static inline uid_t i_uid_read(const struct inode *inode)
-{
-	return from_kuid(&init_user_ns, inode->i_uid);
-}
-
-static inline gid_t i_gid_read(const struct inode *inode)
-{
-	return from_kgid(&init_user_ns, inode->i_gid);
-}
-
-static inline void i_uid_write(struct inode *inode, uid_t uid)
-{
-	inode->i_uid = make_kuid(&init_user_ns, uid);
-}
-
-static inline void i_gid_write(struct inode *inode, gid_t gid)
-{
-	inode->i_gid = make_kgid(&init_user_ns, gid);
-}
-
 static inline unsigned iminor(const struct inode *inode)
 {
 	return MINOR(inode->i_rdev);
@@ -1207,6 +1182,16 @@ static inline struct inode *file_inode(const struct file *f)
 	return f->f_inode;
 }
 
+static inline struct dentry *file_dentry(const struct file *file)
+{
+	struct dentry *dentry = file->f_path.dentry;
+
+	if (unlikely(dentry->d_flags & DCACHE_OP_REAL))
+		return dentry->d_op->d_real(dentry, file_inode(file));
+	else
+		return dentry;
+}
+
 static inline int locks_lock_file_wait(struct file *filp, struct file_lock *fl)
 {
 	return locks_lock_inode_wait(file_inode(filp), fl);
@@ -1256,6 +1241,7 @@ extern struct list_head super_blocks;
 /* sb->s_iflags */
 #define SB_I_CGROUPWB	0x00000001	/* cgroup-aware writeback enabled */
 #define SB_I_NOEXEC	0x00000002	/* Ignore executables on this fs */
+#define SB_I_NOSUID	0x00000004	/* Ignore suid on this fs */
 
 /* Possible states of 'frozen' field */
 enum {
@@ -1357,6 +1343,13 @@ struct super_block {
 	struct hlist_head s_pins;
 
 	/*
+	 * Context in which to interpret filesystem uids, gids,
+	 * quotas, device nodes, extended attributes and security
+	 * labels.
+	 */
+	struct user_namespace *s_user_ns;
+
+	/*
 	 * Keep the lru lists last in the structure so they always sit on their
 	 * own individual cachelines.
 	 */
@@ -1376,6 +1369,31 @@ struct super_block {
 	spinlock_t		s_inode_list_lock ____cacheline_aligned_in_smp;
 	struct list_head	s_inodes;	/* all inodes */
 };
+
+/* Helper functions so that in most cases filesystems will
+ * not need to deal directly with kuid_t and kgid_t and can
+ * instead deal with the raw numeric values that are stored
+ * in the filesystem.
+ */
+static inline uid_t i_uid_read(const struct inode *inode)
+{
+	return from_kuid_munged(inode->i_sb->s_user_ns, inode->i_uid);
+}
+
+static inline gid_t i_gid_read(const struct inode *inode)
+{
+	return from_kgid_munged(inode->i_sb->s_user_ns, inode->i_gid);
+}
+
+static inline void i_uid_write(struct inode *inode, uid_t uid)
+{
+	inode->i_uid = make_kuid(inode->i_sb->s_user_ns, uid);
+}
+
+static inline void i_gid_write(struct inode *inode, gid_t gid)
+{
+	inode->i_gid = make_kgid(inode->i_sb->s_user_ns, gid);
+}
 
 extern struct timespec current_fs_time(struct super_block *sb);
 
@@ -1674,6 +1692,12 @@ ssize_t rw_copy_check_uvector(int type, const struct iovec __user * uvector,
 			      struct iovec *fast_pointer,
 			      struct iovec **ret_pointer);
 
+typedef ssize_t (*vfs_readf_t)(struct file *, char __user *, size_t, loff_t *);
+typedef ssize_t (*vfs_writef_t)(struct file *, const char __user *, size_t,
+				loff_t *);
+vfs_readf_t vfs_readf(struct file *file);
+vfs_writef_t vfs_writef(struct file *file);
+
 extern ssize_t __vfs_read(struct file *, char __user *, size_t, loff_t *);
 extern ssize_t __vfs_write(struct file *, const char __user *, size_t, loff_t *);
 extern ssize_t vfs_read(struct file *, char __user *, size_t, loff_t *);
@@ -1715,6 +1739,10 @@ struct super_operations {
 				  struct shrink_control *);
 	long (*free_cached_objects)(struct super_block *,
 				    struct shrink_control *);
+#if defined(CONFIG_BLK_DEV_LOOP) ||  defined(CONFIG_BLK_DEV_LOOP_MODULE)
+	/* and aufs */
+	struct file *(*real_loop)(struct file *);
+#endif
 };
 
 /*
@@ -1973,6 +2001,11 @@ void deactivate_locked_super(struct super_block *sb);
 int set_anon_super(struct super_block *s, void *data);
 int get_anon_bdev(dev_t *);
 void free_anon_bdev(dev_t);
+struct super_block *sget_userns(struct file_system_type *type,
+			int (*test)(struct super_block *,void *),
+			int (*set)(struct super_block *,void *),
+			int flags, struct user_namespace *user_ns,
+			void *data);
 struct super_block *sget(struct file_system_type *type,
 			int (*test)(struct super_block *,void *),
 			int (*set)(struct super_block *,void *),
@@ -2221,7 +2254,7 @@ extern long do_sys_open(int dfd, const char __user *filename, int flags,
 extern struct file *file_open_name(struct filename *, int, umode_t);
 extern struct file *filp_open(const char *, int, umode_t);
 extern struct file *file_open_root(struct dentry *, struct vfsmount *,
-				   const char *, int);
+				   const char *, int, umode_t);
 extern struct file * dentry_open(const struct path *, int, const struct cred *);
 extern int filp_close(struct file *, fl_owner_t id);
 
@@ -2371,7 +2404,7 @@ static inline void unregister_chrdev(unsigned int major, const char *name)
 #define BLKDEV_MAJOR_HASH_SIZE	255
 extern const char *__bdevname(dev_t, char *buffer);
 extern const char *bdevname(struct block_device *bdev, char *buffer);
-extern struct block_device *lookup_bdev(const char *);
+extern struct block_device *lookup_bdev(const char *, int mask);
 extern void blkdev_show(struct seq_file *,off_t);
 
 #else
@@ -3036,5 +3069,6 @@ static inline bool dir_relax(struct inode *inode)
 }
 
 extern bool path_noexec(const struct path *path);
+extern bool path_nosuid(const struct path *path);
 
 #endif /* _LINUX_FS_H */

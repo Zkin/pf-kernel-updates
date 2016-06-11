@@ -4447,7 +4447,7 @@ int skl_update_scaler_crtc(struct intel_crtc_state *state)
 		      intel_crtc->base.base.id, intel_crtc->pipe, SKL_CRTC_INDEX);
 
 	return skl_update_scaler(state, !state->base.active, SKL_CRTC_INDEX,
-		&state->scaler_state.scaler_id, DRM_ROTATE_0,
+		&state->scaler_state.scaler_id, BIT(DRM_ROTATE_0),
 		state->pipe_src_w, state->pipe_src_h,
 		adjusted_mode->crtc_hdisplay, adjusted_mode->crtc_vdisplay);
 }
@@ -6447,13 +6447,11 @@ static void intel_connector_check_state(struct intel_connector *connector)
 
 int intel_connector_init(struct intel_connector *connector)
 {
-	struct drm_connector_state *connector_state;
+	drm_atomic_helper_connector_reset(&connector->base);
 
-	connector_state = kzalloc(sizeof *connector_state, GFP_KERNEL);
-	if (!connector_state)
+	if (!connector->base.state)
 		return -ENOMEM;
 
-	connector->base.state = connector_state;
 	return 0;
 }
 
@@ -11930,11 +11928,21 @@ connected_sink_compute_bpp(struct intel_connector *connector,
 		pipe_config->pipe_bpp = connector->base.display_info.bpc*3;
 	}
 
-	/* Clamp bpp to 8 on screens without EDID 1.4 */
-	if (connector->base.display_info.bpc == 0 && bpp > 24) {
-		DRM_DEBUG_KMS("clamping display bpp (was %d) to default limit of 24\n",
-			      bpp);
-		pipe_config->pipe_bpp = 24;
+	/* Clamp bpp to default limit on screens without EDID 1.4 */
+	if (connector->base.display_info.bpc == 0) {
+		int type = connector->base.connector_type;
+		int clamp_bpp = 24;
+
+		/* Fall back to 18 bpp when DP sink capability is unknown. */
+		if (type == DRM_MODE_CONNECTOR_DisplayPort ||
+		    type == DRM_MODE_CONNECTOR_eDP)
+			clamp_bpp = 18;
+
+		if (bpp > clamp_bpp) {
+			DRM_DEBUG_KMS("clamping display bpp (was %d) to default limit of %d\n",
+				      bpp, clamp_bpp);
+			pipe_config->pipe_bpp = clamp_bpp;
+		}
 	}
 }
 
@@ -13537,11 +13545,12 @@ intel_check_primary_plane(struct drm_plane *plane,
 	int max_scale = DRM_PLANE_HELPER_NO_SCALING;
 	bool can_position = false;
 
-	/* use scaler when colorkey is not required */
-	if (INTEL_INFO(plane->dev)->gen >= 9 &&
-	    state->ckey.flags == I915_SET_COLORKEY_NONE) {
-		min_scale = 1;
-		max_scale = skl_max_scale(to_intel_crtc(crtc), crtc_state);
+	if (INTEL_INFO(plane->dev)->gen >= 9) {
+		/* use scaler when colorkey is not required */
+		if (state->ckey.flags == I915_SET_COLORKEY_NONE) {
+			min_scale = 1;
+			max_scale = skl_max_scale(to_intel_crtc(crtc), crtc_state);
+		}
 		can_position = true;
 	}
 
@@ -15113,6 +15122,8 @@ static void intel_sanitize_crtc(struct intel_crtc *crtc)
 		WARN_ON(drm_atomic_set_mode_for_crtc(crtc->base.state, NULL) < 0);
 		crtc->base.state->active = crtc->active;
 		crtc->base.enabled = crtc->active;
+		crtc->base.state->connector_mask = 0;
+		crtc->base.state->encoder_mask = 0;
 
 		/* Because we only establish the connector -> encoder ->
 		 * crtc links if something is active, this means the
@@ -15315,7 +15326,23 @@ static void intel_modeset_readout_hw_state(struct drm_device *dev)
 	for_each_intel_connector(dev, connector) {
 		if (connector->get_hw_state(connector)) {
 			connector->base.dpms = DRM_MODE_DPMS_ON;
-			connector->base.encoder = &connector->encoder->base;
+
+			encoder = connector->encoder;
+			connector->base.encoder = &encoder->base;
+
+			if (encoder->base.crtc &&
+			    encoder->base.crtc->state->active) {
+				/*
+				 * This has to be done during hardware readout
+				 * because anything calling .crtc_disable may
+				 * rely on the connector_mask being accurate.
+				 */
+				encoder->base.crtc->state->connector_mask |=
+					1 << drm_connector_index(&connector->base);
+				encoder->base.crtc->state->encoder_mask |=
+					1 << drm_encoder_index(&encoder->base);
+			}
+
 		} else {
 			connector->base.dpms = DRM_MODE_DPMS_OFF;
 			connector->base.encoder = NULL;
@@ -15565,6 +15592,8 @@ void intel_modeset_cleanup(struct drm_device *dev)
 	mutex_lock(&dev->struct_mutex);
 	intel_cleanup_gt_powersave(dev);
 	mutex_unlock(&dev->struct_mutex);
+
+	intel_teardown_gmbus(dev);
 }
 
 /*
