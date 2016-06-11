@@ -28,7 +28,26 @@ config BUILDTIME_EXTABLE_SORT
 
 menu "General setup"
 
-<<<<<<< HEAD
+choice
+	prompt "CPU scheduler"
+	default SCHED_WASTEDCORES
+
+config SCHED_CFS
+	bool "CFS"
+
+config SCHED_WASTEDCORES
+	bool "CFS wastedcores"
+	help
+	  A 2016 study identified several issues with the CFS cpu scheduler.
+	  The authors developed a series of patches for 4 of the issues
+	  they were able to identify; 3 are already implemented in this
+	  kernel.
+
+	  This option enables the fourth patch, which adjusts the CFS
+	  scheduler balancing logic to compare CPU nodes by minimum load,
+	  rather than average, in order to identify idle cores during this
+	  process.
+
 config SCHED_BFS
 	bool "BFS cpu scheduler"
 	---help---
@@ -41,6 +60,8 @@ config SCHED_BFS
 
           Say Y here.
 	default y
+
+endchoice
 
 config ZEN_INTERACTIVE
 	bool "Tune kernel for interactivity"
