@@ -42,7 +42,6 @@ config SCHED_BFS
           Say Y here.
 	default y
 
-=======
 config ZEN_INTERACTIVE
 	bool "Tune kernel for interactivity"
 	default y
@@ -59,10 +58,6 @@ config ZEN_INTERACTIVE
 	    Wakeup granularity.............:   1    ->   0.5  ms
 	    CPU migration cost.............:   0.5  ->   0.25 ms
 	    Bandwidth slice size...........:   5    ->   3    ms
-
-	  --- CPU Frequency Scaling ---
-	    Ondemand down scaling factor...:   1    ->  10
->>>>>>> 7d59ffc... zen-tune: Implement zen-tune v4
 
 config BROKEN
 	bool
